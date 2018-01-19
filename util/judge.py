@@ -1,6 +1,7 @@
 #coding=utf-8
 from util import fileutil,sqlcrud
-import time,os,subprocess
+from threading import Thread
+import time,os,subprocess,signal,uuid
 def exe(result):
     print(result)
     #语言
@@ -9,14 +10,18 @@ def exe(result):
     content=result[6]
     systemid=result[0]
     num=str(result[1])
+    username=result[2]
+    competname=result[8]
 
     #类型解码
     typeresult=sqlcrud.decode("oj_language",language)
     if len(typeresult)==0:
         return 0
     typeresult=typeresult[0]
+
     #文件类型
     filetype=typeresult[4]
+
     #文件名
     filename="Main"
 
@@ -28,32 +33,49 @@ def exe(result):
 
     #编译
     k=compile(filepath,filetype)
-    #sqlcrud.executeVoid("update result SET state='"+str(k)+"' where systemid='"+systemid+"'")
+    sqlcrud.executeVoid("update result SET state='"+str(k)+"' where systemid='"+systemid+"'")
     if k==7:
         return
 
     #查找测试用例
     sql="select * from testcase where problemid="+num
     testcase=sqlcrud.execute(sql)
+    dex=1
     for tcone in testcase:
         #运行
-        print(tcone)
         testInput=tcone[2]
         k=running(filetype,testInput)
-        if k==4:
-            print("运行错误")
-            #sqlcrud.executeVoid("update result SET state='"+str(k)+"' where systemid='"+systemid+"'")
+        if k==4 or k==6:
+            print("用例 "+str(dex)+":运行错误 或者 超时 ！！")
+            sqlcrud.executeVoid("update result SET state='"+str(k)+"' where systemid='"+systemid+"'")
             return
-        print("运行成功")
         test_output=tcone[3]
         #判断答案是否对
         k=judgeAns(k,test_output)
         if k==3:
-            print("答案错误")
-            #sqlcrud.executeVoid("update result SET state='"+str(k)+"' where systemid='"+systemid+"'")
-            #return
-    print(typeresult)
-
+            print("用例 "+str(dex)+":答案错误！！！")
+            sqlcrud.executeVoid("update result SET state='"+str(k)+"' where systemid='"+systemid+"'")
+            return
+        print("用例 "+str(dex)+":通过！！！")
+        dex+=1
+    print("恭喜  ac  ！！ ")
+    sqlcrud.executeVoid("update result SET state='0' where systemid='"+systemid+"'")
+    sql="select COUNT(1) from accept WHERE num="+num+" and  username='"+username+"'"
+    rs=sqlcrud.execute(sql)
+    cnt=rs[0][0]
+    if cnt==0:
+        myid=str(uuid.uuid1())
+        if competname==None:
+            competname=""
+        sql="INSERT INTO `accept` VALUES ('"+myid+"', '"+username+"', '"+num+"', '"+competname+"')"
+        sqlcrud.executeVoid(sql)
+        sql="UPDATE USER SET ac=ac+1 WHERE username='"+username+"'"
+        sqlcrud.executeVoid(sql)
+        if competname!="" and competname!=None:
+            sql="UPDATE register SET ac=ac+1 WHERE username='"+username+"' AND  competname='"+competname+"'"
+            sqlcrud.executeVoid(sql)
+            pass
+        print("用户"+username+" ac 增加1")
 #编译
 def compile(filepath,filetype):
     command=""
@@ -65,7 +87,6 @@ def compile(filepath,filetype):
         command='gcc '+filepath+'\\Main.c'
     else:
         return 7
-    print(command)
     p=os.system(command)
     if p==0:
         print("编译成功")
@@ -73,8 +94,15 @@ def compile(filepath,filetype):
     print("编译失败")
     return 7
 
+s=[]
+def run(p,testInput):
+    global s
+    s=p.communicate(testInput.encode('gbk'))
+    pass
+
 #执行
 def running(filetype,testInput=""):
+    global s
     command=""
     if filetype=='java':
         command='java Main'
@@ -87,8 +115,19 @@ def running(filetype,testInput=""):
     p = subprocess.Popen(command, stdin = subprocess.PIPE,
                          stdout = subprocess.PIPE, stderr = subprocess.PIPE, shell = True)
     p.stdin.flush()
-    s=p.communicate(testInput.encode('gbk'))
-    p.kill()
+    t=Thread(target=run,args=(p,testInput))
+    t.start()
+    t.join(1)
+    #运行超时
+    if p.returncode==None:
+        #os.kill(p.pid,signal.SIGKILL)
+
+        #强制结束进程
+        #print('taskkill.exe /F /T /pid:'+str(p.pid))
+        pp=subprocess.Popen('taskkill.exe /F /T /pid:'+str(p.pid), stdin = subprocess.PIPE,
+                         stdout = subprocess.PIPE, stderr = subprocess.PIPE, shell = True)
+        print("运行超时")
+        return 6
     if str(s[1])=="b''" and s[1]!=None:
         return s[0].decode("utf-8")
     else:
